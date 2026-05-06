@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Trophy, User, Users, ArrowLeftRight, Plus, Minus, Check, Search, X,
-  ChevronRight, Sparkles, LogOut, BookOpen, Star, AlertCircle
+  ChevronRight, Sparkles, LogOut, BookOpen, Star, AlertCircle, Trash2, Settings, Eye, EyeOff
 } from 'lucide-react';
 import {
-  loadMembers, insertMember, loadAllCollections, upsertSticker,
-  subscribeToChanges, getCurrentUserId, setCurrentUserId,
+  supabase,
+  signUpWithUsername, signInWithUsername, signOut,
+  getSession, onAuthChange, ensureMemberRow,
+  loadMembers, loadAllCollections, upsertSticker,
+  subscribeToChanges, deleteMember,
 } from './supabase.js';
 
 // ============================================================
@@ -353,7 +356,8 @@ function useFonts() {
 // ============================================================
 export default function App() {
   useFonts();
-  const [me, setMe] = useState(null);
+  const [session, setSession] = useState(null);
+  const [me, setMe] = useState(null); // { id, name, joinedAt }
   const [members, setMembers] = useState([]);
   const [collections, setCollections] = useState({});
   const [tab, setTab] = useState('album');
@@ -361,61 +365,65 @@ export default function App() {
   const [error, setError] = useState(null);
   const [viewingMember, setViewingMember] = useState(null);
 
+  // -------- session bootstrap & subscription --------
   useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const s = await getSession();
+      if (!mounted) return;
+      setSession(s);
+      setLoading(false);
+    })();
+    const off = onAuthChange((s) => {
+      setSession(s);
+    });
+    return () => { mounted = false; off(); };
+  }, []);
+
+  // -------- when session present, load community + my member row --------
+  useEffect(() => {
+    if (!session) { setMe(null); return; }
     let unsubscribe = null;
+    let cancelled = false;
+
     (async () => {
       try {
         const allMembers = await loadMembers();
         const cols = await loadAllCollections();
+        if (cancelled) return;
         setMembers(allMembers);
         setCollections(cols);
-        const meId = getCurrentUserId();
-        if (meId) {
-          const meObj = allMembers.find((m) => m.id === meId);
-          if (meObj) setMe(meObj);
-        }
-        // Live updates from other collectors
+
+        const meRow = allMembers.find((m) => m.id === session.user.id);
+        if (meRow) setMe(meRow);
+
         unsubscribe = subscribeToChanges(async () => {
           try {
             const [m2, c2] = await Promise.all([loadMembers(), loadAllCollections()]);
+            if (cancelled) return;
             setMembers(m2);
             setCollections(c2);
+            const updatedMe = m2.find((m) => m.id === session.user.id);
+            if (updatedMe) setMe(updatedMe);
           } catch {}
         });
       } catch (e) {
         console.error(e);
-        setError('Could not connect to the album. Check your connection.');
-      } finally {
-        setLoading(false);
+        if (!cancelled) setError('Could not connect to the album. Check your connection.');
       }
     })();
-    return () => { if (unsubscribe) unsubscribe(); };
-  }, []);
 
-  const handleJoin = async (name) => {
-    const id = `u_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const newMember = { id, name: name.trim(), joinedAt: Date.now() };
-    try {
-      await insertMember(newMember);
-      setCurrentUserId(id);
-      setMembers((ms) => [...ms, newMember]);
-      setCollections((c) => ({ ...c, [id]: {} }));
-      setMe(newMember);
-    } catch (e) {
-      console.error(e);
-      setError('Could not join. Try again.');
-    }
-  };
+    return () => { cancelled = true; if (unsubscribe) unsubscribe(); };
+  }, [session]);
 
-  const handleSwitchUser = () => {
-    setCurrentUserId(null);
+  const handleSignOut = async () => {
+    await signOut();
     setMe(null);
   };
 
   const updateSticker = useCallback(async (number, nextCount) => {
     if (!me) return;
     const safe = Math.max(0, Math.min(99, nextCount));
-    // Optimistic local update
     setCollections((c) => {
       const myCol = { ...(c[me.id] || {}) };
       if (safe === 0) delete myCol[number];
@@ -430,30 +438,40 @@ export default function App() {
     }
   }, [me]);
 
-  const refresh = async () => {
+  const handleDeleteMember = async (memberId) => {
     try {
-      const [m2, c2] = await Promise.all([loadMembers(), loadAllCollections()]);
-      setMembers(m2);
-      setCollections(c2);
-    } catch {}
+      await deleteMember(memberId);
+      setMembers((ms) => ms.filter((m) => m.id !== memberId));
+      setCollections((c) => {
+        const next = { ...c };
+        delete next[memberId];
+        return next;
+      });
+    } catch (e) {
+      console.error(e);
+      setError('Could not delete that member.');
+    }
   };
 
   if (loading) return <Splash message="Opening the album…" />;
-  if (!me) return <Setup onJoin={handleJoin} memberCount={members.length} />;
+  if (!session) return <AuthScreen onError={setError} error={error} />;
+  if (!me) return <Splash message="Loading your album…" />;
 
   const myCollection = collections[me.id] || {};
 
   return (
     <div className="min-h-screen" style={styles.app}>
       <style>{globalCss}</style>
-      <Header me={me} myCollection={myCollection}
-              onSwitchUser={handleSwitchUser} onRefresh={refresh} />
+      <Header me={me} myCollection={myCollection} onSignOut={handleSignOut} />
       <Tabs tab={tab} setTab={setTab} />
       <main className="max-w-5xl mx-auto px-4 pb-24">
         {error && (
-          <div className="mb-4 px-4 py-3 rounded-lg flex items-center gap-2"
+          <div className="mb-4 px-4 py-3 rounded-lg flex items-center justify-between gap-2"
                style={{ background: '#fdf3e1', color: '#7a4a00' }}>
-            <AlertCircle size={16} /> <span className="text-sm">{error}</span>
+            <span className="flex items-center gap-2">
+              <AlertCircle size={16} /> <span className="text-sm">{error}</span>
+            </span>
+            <button onClick={() => setError(null)} className="text-xs underline opacity-70">dismiss</button>
           </div>
         )}
         {tab === 'album' && (
@@ -465,6 +483,10 @@ export default function App() {
         )}
         {tab === 'trades' && (
           <TradesTab me={me} members={members} collections={collections} />
+        )}
+        {tab === 'settings' && (
+          <SettingsTab me={me} members={members} collections={collections}
+                       onDeleteMember={handleDeleteMember} />
         )}
       </main>
     </div>
@@ -486,19 +508,56 @@ function Splash({ message }) {
   );
 }
 
-function Setup({ onJoin, memberCount }) {
-  const [name, setName] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+function AuthScreen({ onError, error }) {
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [localError, setLocalError] = useState(null);
+
   const submit = async () => {
-    if (!name.trim() || submitting) return;
-    setSubmitting(true);
-    await onJoin(name);
+    setLocalError(null);
+    if (!username.trim() || !password) {
+      setLocalError('Username and password are required.');
+      return;
+    }
+    if (password.length < 6) {
+      setLocalError('Password must be at least 6 characters.');
+      return;
+    }
+    setBusy(true);
+    try {
+      if (mode === 'signup') {
+        await signUpWithUsername({
+          username,
+          password,
+          displayName: displayName.trim() || username.trim(),
+        });
+      } else {
+        await signInWithUsername({ username, password });
+      }
+    } catch (e) {
+      const msg = e?.message || 'Something went wrong.';
+      // Friendlier messages for common cases
+      if (/already registered|already exists/i.test(msg)) {
+        setLocalError('That username is taken. Try signing in instead.');
+      } else if (/invalid login|invalid credentials/i.test(msg)) {
+        setLocalError('Wrong username or password.');
+      } else {
+        setLocalError(msg);
+      }
+    } finally {
+      setBusy(false);
+    }
   };
+
   return (
-    <div className="min-h-screen flex items-center justify-center px-6" style={styles.app}>
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 py-10" style={styles.app}>
       <style>{globalCss}</style>
       <div className="max-w-md w-full">
-        <div className="text-center mb-10">
+        <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-full mb-5"
                style={{ background: 'var(--ink)', color: 'var(--cream)' }}>
             <Trophy size={28} />
@@ -513,34 +572,105 @@ function Setup({ onJoin, memberCount }) {
             Track your stickers, see what your friends have, and find perfect trades.
           </p>
         </div>
+
         <div className="rounded-2xl p-6" style={styles.card}>
-          <label className="block text-xs uppercase tracking-widest mb-2"
-                 style={{ color: 'var(--ink-soft)', fontWeight: 600 }}>Your name</label>
-          <input value={name} onChange={(e) => setName(e.target.value)}
-                 onKeyDown={(e) => e.key === 'Enter' && submit()}
-                 placeholder="e.g. João"
-                 className="w-full px-4 py-3 rounded-lg border outline-none transition-colors"
-                 style={{ borderColor: 'var(--line)', background: '#fff',
-                          fontFamily: 'var(--font-body)', fontSize: 16 }}
-                 autoFocus />
-          <button onClick={submit} disabled={!name.trim() || submitting}
-                  className="w-full mt-4 py-3 rounded-lg font-semibold transition-all disabled:opacity-40"
+          {/* Tab switcher */}
+          <div className="flex gap-1 rounded-lg p-1 mb-5" style={{ background: '#f0e7d1' }}>
+            <button onClick={() => { setMode('signin'); setLocalError(null); }}
+                    className="flex-1 py-2 text-sm font-semibold rounded-md transition-colors"
+                    style={{
+                      background: mode === 'signin' ? 'var(--ink)' : 'transparent',
+                      color: mode === 'signin' ? 'var(--cream)' : 'var(--ink-soft)',
+                    }}>
+              Sign in
+            </button>
+            <button onClick={() => { setMode('signup'); setLocalError(null); }}
+                    className="flex-1 py-2 text-sm font-semibold rounded-md transition-colors"
+                    style={{
+                      background: mode === 'signup' ? 'var(--ink)' : 'transparent',
+                      color: mode === 'signup' ? 'var(--cream)' : 'var(--ink-soft)',
+                    }}>
+              Create account
+            </button>
+          </div>
+
+          {mode === 'signup' && (
+            <div className="mb-3">
+              <label className="block text-xs uppercase tracking-widest mb-1.5"
+                     style={{ color: 'var(--ink-soft)', fontWeight: 600 }}>
+                Display name (what friends see)
+              </label>
+              <input value={displayName} onChange={(e) => setDisplayName(e.target.value)}
+                     placeholder="e.g. Tommy"
+                     className="w-full px-4 py-2.5 rounded-lg border outline-none"
+                     style={{ borderColor: 'var(--line)', background: '#fff',
+                              fontFamily: 'var(--font-body)', fontSize: 15 }} />
+            </div>
+          )}
+
+          <div className="mb-3">
+            <label className="block text-xs uppercase tracking-widest mb-1.5"
+                   style={{ color: 'var(--ink-soft)', fontWeight: 600 }}>
+              Username
+            </label>
+            <input value={username} onChange={(e) => setUsername(e.target.value)}
+                   onKeyDown={(e) => e.key === 'Enter' && submit()}
+                   placeholder="lowercase, no spaces"
+                   autoComplete="username"
+                   className="w-full px-4 py-2.5 rounded-lg border outline-none"
+                   style={{ borderColor: 'var(--line)', background: '#fff',
+                            fontFamily: 'var(--font-body)', fontSize: 15 }}
+                   autoFocus />
+          </div>
+
+          <div className="mb-4">
+            <label className="block text-xs uppercase tracking-widest mb-1.5"
+                   style={{ color: 'var(--ink-soft)', fontWeight: 600 }}>
+              Password
+            </label>
+            <div className="relative">
+              <input value={password} onChange={(e) => setPassword(e.target.value)}
+                     onKeyDown={(e) => e.key === 'Enter' && submit()}
+                     type={showPw ? 'text' : 'password'}
+                     placeholder="at least 6 characters"
+                     autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                     className="w-full px-4 py-2.5 pr-10 rounded-lg border outline-none"
+                     style={{ borderColor: 'var(--line)', background: '#fff',
+                              fontFamily: 'var(--font-body)', fontSize: 15 }} />
+              <button type="button" onClick={() => setShowPw((s) => !s)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2"
+                      style={{ color: 'var(--ink-soft)' }}>
+                {showPw ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </div>
+
+          {localError && (
+            <div className="mb-3 px-3 py-2 rounded-md text-xs flex items-start gap-2"
+                 style={{ background: '#fbe4d4', color: '#8a3b1b' }}>
+              <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+              <span>{localError}</span>
+            </div>
+          )}
+
+          <button onClick={submit} disabled={busy}
+                  className="w-full py-3 rounded-lg font-semibold transition-all disabled:opacity-40"
                   style={{ background: 'var(--ink)', color: 'var(--cream)',
                            fontFamily: 'var(--font-body)' }}>
-            {submitting ? 'Joining…' : 'Join the community'}
+            {busy ? 'Working…' : (mode === 'signup' ? 'Create account' : 'Sign in')}
           </button>
         </div>
-        <p className="text-center mt-6 text-sm" style={{ color: 'var(--ink-soft)' }}>
-          {memberCount === 0
-            ? <>You'll be the first one in. Invite your friends after.</>
-            : <>{memberCount} {memberCount === 1 ? 'collector is' : 'collectors are'} already here.</>}
+
+        <p className="text-center mt-8 text-[11px]"
+           style={{ color: 'var(--ink-soft)', opacity: 0.55 }}>
+          Built by Tommy Carlin · 2026
         </p>
       </div>
     </div>
   );
 }
 
-function Header({ me, myCollection, onSwitchUser, onRefresh }) {
+function Header({ me, myCollection, onSignOut }) {
   const stats = computeStats(myCollection);
   return (
     <header className="border-b" style={{ borderColor: 'var(--line)', background: 'var(--cream)' }}>
@@ -565,14 +695,11 @@ function Header({ me, myCollection, onSwitchUser, onRefresh }) {
             <p style={{ fontFamily: 'var(--font-display)', fontWeight: 700, color: 'var(--ink)' }}
                className="text-lg leading-none">{stats.percent}%</p>
           </div>
-          <button onClick={onRefresh} title="Refresh community"
-                  className="text-xs px-3 py-2 rounded-lg border hover:bg-white"
-                  style={{ borderColor: 'var(--line)', color: 'var(--ink-soft)' }}>↻</button>
           <div className="flex items-center gap-2 px-3 py-2 rounded-lg border"
                style={{ borderColor: 'var(--line)' }}>
             <User size={14} style={{ color: 'var(--ink-soft)' }} />
             <span className="text-sm font-medium" style={{ color: 'var(--ink)' }}>{me.name}</span>
-            <button onClick={onSwitchUser} title="Switch user">
+            <button onClick={onSignOut} title="Sign out">
               <LogOut size={14} style={{ color: 'var(--ink-soft)' }} />
             </button>
           </div>
@@ -587,6 +714,7 @@ function Tabs({ tab, setTab }) {
     { key: 'album',     label: 'My Album',  icon: BookOpen },
     { key: 'community', label: 'Community', icon: Users },
     { key: 'trades',    label: 'Trades',    icon: ArrowLeftRight },
+    { key: 'settings',  label: 'Settings',  icon: Settings },
   ];
   return (
     <nav className="sticky top-0 z-20 border-b"
@@ -1143,6 +1271,98 @@ function StickerLine({ sticker }) {
       <span className="text-[13px] truncate" style={{ color: 'var(--ink)' }}>
         {sticker.name}
       </span>
+    </div>
+  );
+}
+
+// ============================================================
+// SETTINGS TAB
+// ============================================================
+function SettingsTab({ me, members, collections, onDeleteMember }) {
+  const [confirmId, setConfirmId] = useState(null);
+  const others = members.filter((m) => m.id !== me.id);
+
+  return (
+    <div className="pt-6">
+      <div className="mb-6">
+        <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 700 }}
+            className="text-3xl mb-1">Settings</h2>
+        <p className="text-sm" style={{ color: 'var(--ink-soft)' }}>
+          Manage the community.
+        </p>
+      </div>
+
+      <div className="rounded-xl p-5 mb-6" style={styles.card}>
+        <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 700 }}
+            className="text-xl mb-1">Your account</h3>
+        <p className="text-sm mb-4" style={{ color: 'var(--ink-soft)' }}>
+          Signed in as <strong style={{ color: 'var(--ink)' }}>{me.name}</strong>
+        </p>
+      </div>
+
+      <div className="rounded-xl p-5" style={styles.card}>
+        <h3 style={{ fontFamily: 'var(--font-display)', fontWeight: 700 }}
+            className="text-xl mb-1">Clean up the community</h3>
+        <p className="text-sm mb-5" style={{ color: 'var(--ink-soft)' }}>
+          Remove old test accounts or duplicates. This deletes their entire collection too — it can't be undone.
+        </p>
+
+        {others.length === 0 ? (
+          <p className="text-sm py-4 text-center" style={{ color: 'var(--ink-soft)' }}>
+            No other members yet.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {others.map((m) => {
+              const stats = computeStats(collections[m.id] || {});
+              const isConfirming = confirmId === m.id;
+              return (
+                <div key={m.id}
+                     className="flex items-center gap-3 px-3 py-2.5 rounded-lg"
+                     style={{ background: '#faf6ed', border: '1px solid var(--line)' }}>
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold flex-shrink-0"
+                       style={{ background: 'var(--ink)', color: 'var(--cream)',
+                                fontFamily: 'var(--font-display)' }}>
+                    {m.name[0]?.toUpperCase() || '?'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold truncate"
+                       style={{ color: 'var(--ink)' }}>{m.name}</p>
+                    <p className="text-[11px]" style={{ color: 'var(--ink-soft)' }}>
+                      {stats.have} stickers · {stats.extras} extras
+                    </p>
+                  </div>
+                  {isConfirming ? (
+                    <div className="flex items-center gap-1.5">
+                      <button onClick={() => { onDeleteMember(m.id); setConfirmId(null); }}
+                              className="text-xs font-semibold px-3 py-1.5 rounded-md"
+                              style={{ background: '#b85c3c', color: '#fff' }}>
+                        Yes, delete
+                      </button>
+                      <button onClick={() => setConfirmId(null)}
+                              className="text-xs px-3 py-1.5 rounded-md border"
+                              style={{ borderColor: 'var(--line)', color: 'var(--ink-soft)' }}>
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={() => setConfirmId(m.id)}
+                            title="Remove this member"
+                            className="p-2 rounded-md hover:bg-white transition-colors">
+                      <Trash2 size={15} style={{ color: '#b85c3c' }} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <p className="text-center mt-10 text-[11px]"
+         style={{ color: 'var(--ink-soft)', opacity: 0.55 }}>
+        Built by Tommy Carlin · 2026
+      </p>
     </div>
   );
 }
