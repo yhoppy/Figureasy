@@ -409,7 +409,7 @@ export default function App() {
         });
       } catch (e) {
         console.error(e);
-        if (!cancelled) setError('Could not connect to the album. Check your connection.');
+        if (!cancelled) setError('Could not connect to figureasy. Check your connection.');
       }
     })();
 
@@ -453,7 +453,7 @@ export default function App() {
     }
   };
 
-  if (loading) return <Splash message="Opening the album…" />;
+  if (loading) return <Splash message="Opening figureasy…" />;
   if (!session) return <AuthScreen onError={setError} error={error} />;
   if (!me) return <Splash message="Loading your album…" />;
 
@@ -563,7 +563,7 @@ function AuthScreen({ onError, error }) {
             <Trophy size={28} />
           </div>
           <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 700 }}
-              className="text-5xl tracking-tight mb-2">The Album</h1>
+              className="text-5xl tracking-tight mb-2">Figureasy</h1>
           <p className="uppercase tracking-[0.25em] text-xs"
              style={{ color: 'var(--accent)', fontWeight: 600 }}>
             World Cup 2026 · 980 stickers
@@ -682,7 +682,7 @@ function Header({ me, myCollection, onSignOut }) {
           </div>
           <div>
             <h1 style={{ fontFamily: 'var(--font-display)', fontWeight: 700 }}
-                className="text-xl leading-none">The Album</h1>
+                className="text-xl leading-none">Figureasy</h1>
             <p className="text-[10px] uppercase tracking-widest mt-0.5"
                style={{ color: 'var(--accent)', fontWeight: 600 }}>WC 2026 · 980</p>
           </div>
@@ -998,7 +998,7 @@ function CommunityTab({ me, members, collections, viewingMember, setViewingMembe
         <h2 style={{ fontFamily: 'var(--font-display)', fontWeight: 700 }}
             className="text-3xl mb-1">The collectors</h2>
         <p className="text-sm" style={{ color: 'var(--ink-soft)' }}>
-          {members.length} {members.length === 1 ? 'person is' : 'people are'} chasing the album.
+          {members.length} {members.length === 1 ? 'person is' : 'people are'} chasing figureasy.
         </p>
       </div>
       <div className="space-y-3">
